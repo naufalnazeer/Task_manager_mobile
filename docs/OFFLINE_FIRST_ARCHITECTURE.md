@@ -22,11 +22,41 @@ This document describes the offline-first architecture used in the Task Manager 
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
-| Database | `react-native-quick-sqlite` | High-performance synchronous SQLite access with WAL mode |
-| State Management | `zustand` | Lightweight stores for tasks, auth, sync, and network state |
+| Database | `react-native-quick-sqlite` | High-performance synchronous SQLite with WAL mode |
+| State Management | `zustand` | Lightweight reactive stores |
+| HTTP Client | `axios` | Request/response interceptors, timeout, auth headers |
 | Network Detection | `@react-native-community/netinfo` | Real-time connectivity monitoring |
-| API Client | Native `fetch` | HTTP client with timeout, auth headers, and error handling |
+| File Handling | `react-native-fs` | Local file storage for attachments |
+| Document Picker | `react-native-document-picker` | File selection for attachments |
+| Audio Recording | `react-native-audio-recorder-player` | Voice note recording/playback |
 | Backend | Node.js + Express + MongoDB | REST API with JWT authentication |
+
+---
+
+## Feature Set
+
+### Task Management
+- **Create/Edit/Delete tasks** — Full CRUD with instant local persistence
+- **Priority levels** — Low, Medium, High, Urgent with color coding
+- **Due dates** — ISO date format with visual indicators
+- **Recurring tasks** — Daily, Weekly, Monthly, Yearly recurrence configuration
+- **Subtasks** — Nested checklist items with completion tracking
+- **Task categories** — Organize tasks into categories (Work, Personal, etc.)
+- **Labels/Tags** — Multiple tags per task for cross-cutting organization
+- **Notes** — Separate notes field for additional context
+- **Attachments** — File attachments stored locally with server upload support
+- **Voice notes** — Audio recordings attached to tasks
+- **Rich text descriptions** — Markdown-supported description field
+
+### Search & Filtering
+- **Full-text search** — Searches title, description, notes, category, and labels
+- **Debounced input** — 300ms delay prevents excessive queries
+- **Relevance ranking** — Title matches rank highest, then category, then other fields
+- **Search highlighting** — Matching text highlighted in results
+- **Status filter** — Pending, In Progress, Completed
+- **Priority filter** — Low, Medium, High, Urgent
+- **Category filter** — Filter by task category
+- **Label filter** — Filter by specific tag
 
 ---
 
@@ -49,8 +79,8 @@ This document describes the offline-first architecture used in the Task Manager 
 │               Sync Engine + Background Sync              │
 │   Push queue → Pull server → Reconcile                   │
 ├─────────────────────────────────────────────────────────┤
-│                    API Client                             │
-│   REST endpoints • JWT auth • Timeout handling           │
+│                  Axios HTTP Client                        │
+│   Interceptors • JWT auth • Timeout • Error handling     │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +96,8 @@ User taps "Create Task"
         ▼
 ┌─────────────────────┐
 │  TaskRepository      │──▶ INSERT into SQLite (instant)
-│  .create()           │
+│  .create()           │    Includes: subtasks, labels, category,
+│                      │    recurrence, notes — all stored as JSON
 └─────────────────────┘
         │
         ▼
@@ -78,13 +109,13 @@ User taps "Create Task"
         ▼
 ┌─────────────────────┐
 │  Is Online?          │
-│  YES → fire-and-     │──▶ POST /api/tasks (async, non-blocking)
+│  YES → fire-and-     │──▶ POST /api/tasks via Axios (non-blocking)
 │        forget API    │
 │  NO  → stays queued  │──▶ Will sync when network returns
 └─────────────────────┘
         │
         ▼
-   UI updates immediately from SQLite
+   UI updates immediately from Zustand store
 ```
 
 ### Background Sync Cycle
@@ -130,17 +161,69 @@ Trigger: Network restored / App foreground / 30s interval
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | TEXT PK | MongoDB `_id` or local UUID before first sync |
-| `title` | TEXT | Task title (required) |
-| `description` | TEXT | Task description |
-| `priority` | TEXT | `low`, `medium`, `high` |
+| `title` | TEXT | Task title (required, max 200 chars) |
+| `description` | TEXT | Rich text description (markdown supported) |
+| `priority` | TEXT | `low`, `medium`, `high`, `urgent` |
 | `status` | TEXT | `pending`, `in-progress`, `completed` |
 | `due_date` | TEXT | ISO date string or NULL |
+| `category` | TEXT | Task category (e.g., "Work", "Personal") |
+| `labels` | TEXT | JSON array of label strings |
+| `notes` | TEXT | Additional notes text |
+| `subtasks` | TEXT | JSON array of subtask objects |
+| `recurrence` | TEXT | JSON recurrence config object |
+| `attachments` | TEXT | JSON array of attachment metadata |
+| `voice_notes` | TEXT | JSON array of voice note metadata |
 | `created_at` | TEXT | ISO timestamp |
 | `updated_at` | TEXT | ISO timestamp |
 | `version` | INTEGER | Incremented on each local update |
 | `is_deleted` | INTEGER | Soft delete flag (0 or 1) |
 | `last_synced_at` | TEXT | Timestamp of last successful sync |
 | `needs_sync` | INTEGER | 1 if local changes haven't been pushed |
+
+### JSON Field Structures
+
+**Subtask:**
+```json
+{
+  "id": "uuid",
+  "title": "Subtask title",
+  "isCompleted": false,
+  "createdAt": "2025-01-01T00:00:00.000Z"
+}
+```
+
+**Attachment:**
+```json
+{
+  "id": "uuid",
+  "fileName": "document.pdf",
+  "filePath": "/local/path/document.pdf",
+  "fileSize": 1024,
+  "mimeType": "application/pdf",
+  "createdAt": "2025-01-01T00:00:00.000Z"
+}
+```
+
+**Voice Note:**
+```json
+{
+  "id": "uuid",
+  "filePath": "/local/path/voice_123.m4a",
+  "duration": 15,
+  "createdAt": "2025-01-01T00:00:00.000Z"
+}
+```
+
+**Recurrence Config:**
+```json
+{
+  "type": "weekly",
+  "interval": 1,
+  "daysOfWeek": [1, 3, 5],
+  "endDate": null,
+  "occurrences": null
+}
+```
 
 ### `sync_queue` Table
 
@@ -157,9 +240,38 @@ Trigger: Network restored / App foreground / 30s interval
 | `next_retry_at` | TEXT | Scheduled retry time (exponential backoff) |
 | `error_message` | TEXT | Last error message |
 
-### `sync_meta` Table
+---
 
-Stores key-value metadata like auth session and last sync timestamp.
+## Axios HTTP Client
+
+The app uses Axios with interceptors for centralized auth and error handling:
+
+```typescript
+// Request interceptor: auto-attach JWT
+api.interceptors.request.use((config) => {
+  if (authToken) {
+    config.headers.Authorization = `Bearer ${authToken}`;
+  }
+  return config;
+});
+
+// Response interceptor: normalize errors
+api.interceptors.response.use(
+  response => response,
+  (error) => {
+    // Extract meaningful error message from response
+    // Handle timeout (ECONNABORTED)
+    // Return rejected promise with clean Error
+  }
+);
+```
+
+**Benefits over raw fetch:**
+- Automatic JSON serialization/deserialization
+- Request/response interceptors for auth
+- Timeout handling built-in
+- Multipart form data support for file uploads
+- Better error normalization
 
 ---
 
@@ -167,13 +279,11 @@ Stores key-value metadata like auth session and last sync timestamp.
 
 ### Enqueue Strategy
 
-- **Deduplication**: If a pending operation already exists for the same task + operation type, it's replaced (not duplicated).
+- **Deduplication**: If a pending operation already exists for the same task + operation type, it's replaced.
 - **Delete cascading**: Enqueueing a `delete` removes any pending `create` or `update` for that task.
 - **Ordering**: Items are processed in FIFO order by timestamp.
 
-### Retry Mechanism
-
-Failed sync operations use **exponential backoff**:
+### Retry Mechanism (Exponential Backoff)
 
 | Retry # | Delay |
 |---------|-------|
@@ -183,7 +293,7 @@ Failed sync operations use **exponential backoff**:
 | 4 | 16 seconds |
 | 5 | 32 seconds |
 
-After 5 failed attempts, the item enters a "dead letter" state and won't be retried automatically. The user can manually trigger a retry.
+After 5 failed attempts, the item enters a "dead letter" state.
 
 ### Queue States
 
@@ -194,55 +304,57 @@ pending ──▶ in_progress ──▶ completed (removed)
             failed ──▶ pending (after backoff delay)
                 │
                 ▼ (after max retries)
-            dead letter (manual intervention needed)
+            dead letter
 ```
 
 ---
 
-## Network Detection
-
-The `networkStore` (Zustand) subscribes to `@react-native-community/netinfo` and exposes a reactive `isConnected` boolean.
+## Network Detection & Auto-Sync
 
 **Auto-sync triggers:**
-1. Network connectivity restored (offline → online transition)
-2. App returns to foreground (`AppState` listener)
-3. Periodic interval (every 30 seconds while online)
-4. Manual "Sync Now" button in the UI
+1. Network connectivity restored (offline → online)
+2. App returns to foreground
+3. Periodic interval (every 30 seconds)
+4. Manual "Sync Now" button
 
-**Minimum sync gap:** 5 seconds between sync cycles to prevent flooding.
+**Minimum sync gap:** 5 seconds between cycles.
 
 ---
 
 ## Conflict Resolution
 
-The current strategy is **"local changes win"** (conflict avoidance):
+Strategy: **"Local changes win"** (conflict avoidance)
 
-- During a pull from the server, if a local task has `needs_sync = 1` (pending local changes), the server version is **not** applied.
-- Once the local change is successfully pushed, `needs_sync` is set to `0`, and subsequent pulls will update the local copy.
-- If a task was deleted on the server but has no pending local changes, it's removed locally.
-
-This approach avoids data loss from the user's perspective — their most recent action always takes priority.
+- During pull: if `needs_sync = 1`, server version is NOT applied
+- After successful push: `needs_sync = 0`, subsequent pulls update normally
+- Server-deleted tasks are removed locally only if no pending local changes
 
 ---
 
-## ID Management
+## Zustand Store Architecture
 
-Tasks created offline receive a locally-generated UUID. When the task is successfully synced to the server:
+### `taskStore`
+- Task CRUD (create, update, delete, getTask)
+- Subtask management (add, toggle, remove)
+- Attachment management (add, remove)
+- Voice note management (add, remove)
+- Search with relevance ranking
+- Category/label metadata loading
+- Server pull with reconciliation
 
-1. The server returns a MongoDB `_id`.
-2. `TaskRepository.updateServerId()` replaces the local UUID with the server ID.
-3. All sync queue references are updated to the new ID.
+### `authStore`
+- Login/register with JWT
+- Session persistence in SQLite
+- Token management via Axios interceptor
 
-This ensures the local and server always reference the same task after first sync.
+### `syncStore`
+- Sync state (isSyncing, pendingCount, lastError)
+- Manual sync trigger
+- Pending count refresh
 
----
-
-## Authentication & Session Persistence
-
-- JWT tokens are stored in the `sync_meta` SQLite table (key: `auth_session`).
-- On app launch, `authStore.restoreSession()` reads the persisted token and rehydrates the auth state.
-- All API requests include `Authorization: Bearer <token>` via the centralized `request()` function.
-- Token expiry (7 days) is handled by the backend returning 401, which the app can use to prompt re-login.
+### `networkStore`
+- NetInfo subscription
+- Reactive `isConnected` state
 
 ---
 
@@ -251,82 +363,113 @@ This ensures the local and server always reference the same task after first syn
 ```
 src/
 ├── api/
-│   └── client.ts              # HTTP client, auth/task API endpoints
+│   └── client.ts              # Axios instance, interceptors, Auth + Task API
 ├── components/
 │   ├── EmptyState.tsx          # Empty list placeholder
 │   ├── NetworkBanner.tsx       # Offline/sync status banner
-│   └── TaskCard.tsx            # Task list item with search highlighting
+│   └── TaskCard.tsx            # Task card with labels, subtask count, attachments
 ├── database/
 │   ├── connection.ts           # SQLite singleton, WAL mode, transactions
-│   └── schema.ts              # Table definitions and indexes
+│   └── schema.ts              # Tables with JSON columns for complex data
 ├── hooks/
-│   └── useDebounce.ts          # Debounce hook for search input
+│   └── useDebounce.ts          # Debounce hook for search
 ├── navigation/
 │   ├── AppNavigator.tsx        # Auth gate + stack navigators
 │   └── types.ts               # Navigation type definitions
 ├── repositories/
 │   ├── SyncQueueRepository.ts  # Queue CRUD, retry logic, backoff
-│   └── TaskRepository.ts      # Task CRUD, search, sync helpers
+│   └── TaskRepository.ts      # Task CRUD, search, categories, labels
 ├── screens/
-│   ├── CreateTaskScreen.tsx    # New task form
+│   ├── CreateTaskScreen.tsx    # Full task creation with all fields
 │   ├── LoginScreen.tsx         # Authentication
 │   ├── RegisterScreen.tsx      # User registration
-│   ├── TaskDetailScreen.tsx    # Task view/edit/delete
-│   └── TaskListScreen.tsx      # Main list with search + filters
+│   ├── TaskDetailScreen.tsx    # View/edit with subtasks, attachments, voice notes
+│   └── TaskListScreen.tsx      # List with search, filters, categories
 ├── stores/
-│   ├── authStore.ts            # Zustand: login, register, session
-│   ├── networkStore.ts         # Zustand: connectivity state
-│   ├── syncStore.ts            # Zustand: sync state, trigger sync
-│   └── taskStore.ts            # Zustand: task CRUD, search, pull
+│   ├── authStore.ts            # Zustand: auth state + session persistence
+│   ├── networkStore.ts         # Zustand: connectivity
+│   ├── syncStore.ts            # Zustand: sync state
+│   └── taskStore.ts            # Zustand: tasks, subtasks, attachments, voice notes
 ├── sync/
-│   ├── BackgroundSync.ts       # Auto-sync manager (timers, listeners)
+│   ├── BackgroundSync.ts       # Auto-sync manager
 │   └── SyncEngine.ts          # Push/pull orchestration
 ├── types/
-│   ├── auth.ts                # Auth type definitions
-│   └── task.ts                # Task, sync queue, filter types
+│   ├── auth.ts                # Auth types
+│   └── task.ts                # Task, Subtask, Attachment, VoiceNote, Recurrence types
 └── utils/
-    └── id.ts                  # UUID generation (no external deps)
+    └── id.ts                  # UUID generation
 ```
 
 ---
 
 ## API Endpoints (Backend)
 
+### Authentication
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/auth/register` | No | Register new user |
 | POST | `/api/auth/login` | No | Login, returns JWT |
 | GET | `/api/auth/profile` | Yes | Get current user |
-| GET | `/api/tasks` | Yes | List all tasks (supports `?status=&priority=&sort=`) |
+
+### Tasks (CRUD)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/tasks` | Yes | List tasks (`?status=&priority=&category=&label=&search=&sort=`) |
 | GET | `/api/tasks/:id` | Yes | Get single task |
-| POST | `/api/tasks` | Yes | Create task |
-| PUT | `/api/tasks/:id` | Yes | Update task |
-| DELETE | `/api/tasks/:id` | Yes | Delete task |
+| POST | `/api/tasks` | Yes | Create task (all fields) |
+| PUT | `/api/tasks/:id` | Yes | Update task (partial) |
+| DELETE | `/api/tasks/:id` | Yes | Delete task (also removes files) |
+
+### Metadata
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/tasks/categories` | Yes | Get all unique categories for user |
+| GET | `/api/tasks/labels` | Yes | Get all unique labels for user |
+
+### Subtasks
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/tasks/:id/subtasks` | Yes | Add subtask (`{ title }`) |
+| PATCH | `/api/tasks/:id/subtasks/:subtaskId/toggle` | Yes | Toggle subtask completion |
+| DELETE | `/api/tasks/:id/subtasks/:subtaskId` | Yes | Remove subtask |
+
+### Attachments
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/tasks/:id/attachments` | Yes | Upload file (multipart, field: `file`, max 10MB) |
+| DELETE | `/api/tasks/:id/attachments/:attachmentId` | Yes | Remove attachment + delete file |
+
+### Voice Notes
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/tasks/:id/voice-notes` | Yes | Upload audio (multipart, field: `audio`, + `duration`) |
+| DELETE | `/api/tasks/:id/voice-notes/:voiceNoteId` | Yes | Remove voice note + delete file |
+
+### Static Files
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/uploads/attachments/:filename` | No | Serve attachment file |
+| GET | `/uploads/voice-notes/:filename` | No | Serve voice note file |
 
 ---
 
 ## Performance Optimizations
 
-1. **WAL mode** — SQLite Write-Ahead Logging allows concurrent reads during writes.
-2. **Indexes** — On `status`, `priority`, `is_deleted`, `needs_sync`, and `sync_queue.status`.
-3. **Synchronous operations** — `react-native-quick-sqlite` executes on the JS thread without async overhead for reads.
-4. **Debounced search** — 300ms delay prevents excessive queries during typing.
-5. **Relevance-ranked search** — Title matches appear before description-only matches.
-6. **Queue deduplication** — Prevents redundant network requests for rapid edits.
-7. **Minimum sync gap** — 5-second cooldown prevents sync flooding.
-
----
-
-## Limitations & Future Improvements
-
-| Current Limitation | Potential Improvement |
-|-------------------|----------------------|
-| Full task list pull on each sync | Implement delta sync with `?since=<timestamp>` on the server |
-| No per-field conflict resolution | Add field-level timestamps and 3-way merge |
-| No pagination from server | Add cursor-based pagination to `GET /api/tasks` |
-| Token expiry not handled gracefully | Add refresh token flow or silent re-auth |
-| No push notifications | Add WebSocket or FCM for real-time server → client updates |
-| Single-device only | Add device ID tracking for multi-device conflict resolution |
+1. **WAL mode** — Concurrent reads during writes
+2. **Indexes** — On status, priority, category, is_deleted, needs_sync, due_date
+3. **Synchronous SQLite** — No async overhead for local reads
+4. **Debounced search** — 300ms delay
+5. **Relevance-ranked results** — Title > Category > Description
+6. **Queue deduplication** — No redundant network requests
+7. **Axios interceptors** — Centralized auth, no per-request boilerplate
+8. **JSON columns** — Complex data (subtasks, labels) stored as JSON in SQLite for flexibility
 
 ---
 
@@ -346,12 +489,101 @@ npm run ios
 npm run android
 ```
 
-The API client auto-selects the correct base URL:
+The Axios client auto-selects the correct base URL:
 - **iOS Simulator**: `http://localhost:3000`
 - **Android Emulator**: `http://10.0.2.2:3000`
 
 ---
 
+## Backend Architecture
+
+### File Structure (Node.js)
+
+```
+Nodejs/
+├── src/
+│   ├── index.js                    # Express app, MongoDB connection, static serving
+│   ├── controllers/
+│   │   ├── auth.controller.js      # Register, login, profile
+│   │   └── task.controller.js      # Full CRUD + subtasks + attachments + voice notes
+│   ├── middleware/
+│   │   ├── auth.middleware.js      # JWT verification
+│   │   └── upload.middleware.js    # Multer config for files and audio
+│   ├── models/
+│   │   ├── task.model.js           # Mongoose schema with embedded subdocuments
+│   │   └── user.model.js           # User with bcrypt password hashing
+│   └── routes/
+│       ├── auth.routes.js          # /api/auth/*
+│       └── task.routes.js          # /api/tasks/* (all endpoints)
+├── uploads/
+│   ├── attachments/                # Stored attachment files
+│   └── voice-notes/                # Stored voice note audio files
+├── .env                            # PORT, MONGODB_URI, JWT_SECRET
+└── package.json
+```
+
+### Backend Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| express | 4.18.2 | HTTP framework |
+| mongoose | 7.6.3 | MongoDB ODM |
+| jsonwebtoken | 9.0.2 | JWT auth tokens |
+| bcryptjs | 2.4.3 | Password hashing |
+| multer | latest | File upload handling |
+| dotenv | 16.3.1 | Environment variables |
+
+### Task Model (MongoDB)
+
+The Task model uses embedded subdocuments for subtasks, attachments, and voice notes:
+
+```javascript
+{
+  title: String (required, max 200),
+  description: String (markdown supported),
+  status: 'pending' | 'in-progress' | 'completed',
+  priority: 'low' | 'medium' | 'high' | 'urgent',
+  dueDate: Date,
+  category: String,
+  labels: [String],
+  notes: String,
+  subtasks: [{ id, title, isCompleted, createdAt }],
+  recurrence: { type, interval, daysOfWeek, endDate, occurrences },
+  attachments: [{ id, fileName, filePath, fileSize, mimeType, createdAt }],
+  voiceNotes: [{ id, filePath, duration, createdAt }],
+  user: ObjectId (ref: User),
+  createdAt: Date (auto),
+  updatedAt: Date (auto)
+}
+```
+
+### Indexes
+
+- Text index on `title`, `description`, `notes`, `category` for search
+- Compound indexes: `user+status`, `user+priority`, `user+category`, `user+dueDate`
+
+---
+
+## Dependencies
+
+```json
+{
+  "@react-native-community/netinfo": "Network detection",
+  "@react-navigation/native": "Navigation",
+  "@react-navigation/native-stack": "Stack navigator",
+  "axios": "HTTP client with interceptors",
+  "react-native-audio-recorder-player": "Voice note recording",
+  "react-native-document-picker": "File attachment selection",
+  "react-native-fs": "Local file system access",
+  "react-native-quick-sqlite": "SQLite database",
+  "react-native-safe-area-context": "Safe area handling",
+  "react-native-screens": "Native screen containers",
+  "zustand": "State management"
+}
+```
+
+---
+
 ## Summary
 
-The offline-first approach ensures the Task Manager app is fully functional without network connectivity. Users can create, edit, delete, and search tasks at any time. All changes are persisted in SQLite and automatically synchronized with the backend when connectivity is available. The sync queue with exponential backoff retry guarantees no data is lost, even under unreliable network conditions.
+The Task Manager implements a comprehensive offline-first architecture where every operation — from creating tasks with subtasks and attachments to recording voice notes — works instantly without network connectivity. All data is persisted in SQLite with JSON columns for complex nested structures. The Axios-based API client with interceptors handles authentication transparently, while the background sync engine with exponential backoff retry ensures eventual consistency with the server. Zustand stores provide reactive state management without the boilerplate of Context providers.

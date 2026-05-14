@@ -4,6 +4,7 @@ import {
   TaskFilters,
   CreateTaskInput,
   UpdateTaskInput,
+  DEFAULT_RECURRENCE,
 } from '../types/task';
 import { generateId } from '../utils/id';
 
@@ -14,7 +15,6 @@ interface PaginatedResult {
 
 /**
  * Repository layer for Task CRUD operations against local SQLite.
- * All operations are synchronous (react-native-quick-sqlite is sync).
  */
 export const TaskRepository = {
   create(input: CreateTaskInput): Task {
@@ -27,6 +27,13 @@ export const TaskRepository = {
       priority: input.priority,
       status: 'pending',
       dueDate: input.dueDate,
+      category: input.category || '',
+      labels: input.labels || [],
+      notes: input.notes || '',
+      subtasks: input.subtasks || [],
+      recurrence: input.recurrence || DEFAULT_RECURRENCE,
+      attachments: [],
+      voiceNotes: [],
       createdAt: now,
       updatedAt: now,
       version: 1,
@@ -36,8 +43,8 @@ export const TaskRepository = {
     };
 
     db.execute(
-      `INSERT INTO tasks (id, title, description, priority, status, due_date, created_at, updated_at, version, is_deleted, last_synced_at, needs_sync)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, title, description, priority, status, due_date, category, labels, notes, subtasks, recurrence, attachments, voice_notes, created_at, updated_at, version, is_deleted, last_synced_at, needs_sync)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         task.id,
         task.title,
@@ -45,6 +52,13 @@ export const TaskRepository = {
         task.priority,
         task.status,
         task.dueDate,
+        task.category,
+        JSON.stringify(task.labels),
+        task.notes,
+        JSON.stringify(task.subtasks),
+        JSON.stringify(task.recurrence),
+        JSON.stringify(task.attachments),
+        JSON.stringify(task.voiceNotes),
         task.createdAt,
         task.updatedAt,
         task.version,
@@ -87,6 +101,34 @@ export const TaskRepository = {
       if (input.dueDate !== undefined) {
         setClauses.push('due_date = ?');
         setValues.push(input.dueDate);
+      }
+      if (input.category !== undefined) {
+        setClauses.push('category = ?');
+        setValues.push(input.category);
+      }
+      if (input.labels !== undefined) {
+        setClauses.push('labels = ?');
+        setValues.push(JSON.stringify(input.labels));
+      }
+      if (input.notes !== undefined) {
+        setClauses.push('notes = ?');
+        setValues.push(input.notes);
+      }
+      if (input.subtasks !== undefined) {
+        setClauses.push('subtasks = ?');
+        setValues.push(JSON.stringify(input.subtasks));
+      }
+      if (input.recurrence !== undefined) {
+        setClauses.push('recurrence = ?');
+        setValues.push(JSON.stringify(input.recurrence));
+      }
+      if (input.attachments !== undefined) {
+        setClauses.push('attachments = ?');
+        setValues.push(JSON.stringify(input.attachments));
+      }
+      if (input.voiceNotes !== undefined) {
+        setClauses.push('voice_notes = ?');
+        setValues.push(JSON.stringify(input.voiceNotes));
       }
 
       setValues.push(id);
@@ -139,10 +181,18 @@ export const TaskRepository = {
       conditions.push('priority = ?');
       params.push(filters.priority);
     }
+    if (filters.category) {
+      conditions.push('category = ?');
+      params.push(filters.category);
+    }
+    if (filters.label) {
+      conditions.push("labels LIKE ?");
+      params.push(`%"${filters.label}"%`);
+    }
     if (filters.searchQuery) {
-      conditions.push('(title LIKE ? OR description LIKE ?)');
+      conditions.push('(title LIKE ? OR description LIKE ? OR notes LIKE ? OR category LIKE ?)');
       const q = `%${filters.searchQuery}%`;
-      params.push(q, q);
+      params.push(q, q, q, q);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -169,59 +219,7 @@ export const TaskRepository = {
   },
 
   /**
-   * Upsert a task from server data (used during pull sync).
-   */
-  upsertFromServer(task: Task): void {
-    const db = getDatabase();
-    db.execute(
-      `INSERT OR REPLACE INTO tasks (id, title, description, priority, status, due_date, created_at, updated_at, version, is_deleted, last_synced_at, needs_sync)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        task.id,
-        task.title,
-        task.description,
-        task.priority,
-        task.status,
-        task.dueDate,
-        task.createdAt,
-        task.updatedAt,
-        task.version,
-        task.isDeleted ? 1 : 0,
-        new Date().toISOString(),
-        0, // Server data doesn't need sync
-      ],
-    );
-  },
-
-  /**
-   * Update local task ID to match server-assigned ID.
-   */
-  updateServerId(localId: string, serverId: string): void {
-    const db = getDatabase();
-    // Update sync queue references
-    db.execute('UPDATE sync_queue SET task_id = ? WHERE task_id = ?', [
-      serverId,
-      localId,
-    ]);
-    // Update task ID
-    db.execute('UPDATE tasks SET id = ? WHERE id = ?', [serverId, localId]);
-  },
-
-  /**
-   * Mark a task as synced (no longer needs sync).
-   */
-  markSynced(id: string): void {
-    const db = getDatabase();
-    db.execute(
-      'UPDATE tasks SET last_synced_at = ?, needs_sync = 0 WHERE id = ?',
-      [new Date().toISOString(), id],
-    );
-  },
-
-  /**
-   * Search tasks with relevance ranking.
-   * Title matches rank higher than description matches.
-   * Returns results sorted by relevance then recency.
+   * Search with relevance ranking.
    */
   search(query: string, filters: TaskFilters = {}): Task[] {
     const db = getDatabase();
@@ -236,18 +234,22 @@ export const TaskRepository = {
       conditions.push('priority = ?');
       params.push(filters.priority);
     }
+    if (filters.category) {
+      conditions.push('category = ?');
+      params.push(filters.category);
+    }
 
     const searchTerm = `%${query}%`;
-    conditions.push('(title LIKE ? OR description LIKE ?)');
-    params.push(searchTerm, searchTerm);
+    conditions.push('(title LIKE ? OR description LIKE ? OR notes LIKE ? OR category LIKE ? OR labels LIKE ?)');
+    params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
-    // Rank: title match = 2, description-only match = 1, then by updated_at
     const sql = `
       SELECT *,
         CASE
-          WHEN title LIKE ? THEN 2
+          WHEN title LIKE ? THEN 3
+          WHEN category LIKE ? THEN 2
           ELSE 1
         END as relevance
       FROM tasks
@@ -255,7 +257,7 @@ export const TaskRepository = {
       ORDER BY relevance DESC, updated_at DESC
     `;
 
-    const result = db.execute(sql, [searchTerm, ...params]);
+    const result = db.execute(sql, [searchTerm, searchTerm, ...params]);
     const tasks: Task[] = [];
     if (result.rows) {
       for (let i = 0; i < result.rows.length; i++) {
@@ -263,6 +265,84 @@ export const TaskRepository = {
       }
     }
     return tasks;
+  },
+
+  /**
+   * Get all unique categories.
+   */
+  getCategories(): string[] {
+    const db = getDatabase();
+    const result = db.execute(
+      "SELECT DISTINCT category FROM tasks WHERE is_deleted = 0 AND category != '' ORDER BY category",
+    );
+    const categories: string[] = [];
+    if (result.rows) {
+      for (let i = 0; i < result.rows.length; i++) {
+        categories.push(result.rows.item(i).category as string);
+      }
+    }
+    return categories;
+  },
+
+  /**
+   * Get all unique labels across all tasks.
+   */
+  getAllLabels(): string[] {
+    const db = getDatabase();
+    const result = db.execute(
+      "SELECT labels FROM tasks WHERE is_deleted = 0 AND labels != '[]'",
+    );
+    const labelSet = new Set<string>();
+    if (result.rows) {
+      for (let i = 0; i < result.rows.length; i++) {
+        const labels = JSON.parse(result.rows.item(i).labels as string) as string[];
+        labels.forEach(l => labelSet.add(l));
+      }
+    }
+    return Array.from(labelSet).sort();
+  },
+
+  upsertFromServer(task: Task): void {
+    const db = getDatabase();
+    db.execute(
+      `INSERT OR REPLACE INTO tasks (id, title, description, priority, status, due_date, category, labels, notes, subtasks, recurrence, attachments, voice_notes, created_at, updated_at, version, is_deleted, last_synced_at, needs_sync)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        task.id,
+        task.title,
+        task.description,
+        task.priority,
+        task.status,
+        task.dueDate,
+        task.category,
+        JSON.stringify(task.labels),
+        task.notes,
+        JSON.stringify(task.subtasks),
+        JSON.stringify(task.recurrence),
+        JSON.stringify(task.attachments),
+        JSON.stringify(task.voiceNotes),
+        task.createdAt,
+        task.updatedAt,
+        task.version,
+        task.isDeleted ? 1 : 0,
+        new Date().toISOString(),
+        0,
+      ],
+    );
+  },
+
+  updateServerId(localId: string, serverId: string): void {
+    const db = getDatabase();
+    db.execute('UPDATE sync_queue SET task_id = ? WHERE task_id = ?', [serverId, localId]);
+    db.execute('UPDATE tasks SET id = ? WHERE id = ?', [serverId, localId]);
+  },
+
+  markSynced(id: string): void {
+    const db = getDatabase();
+    db.execute(
+      'UPDATE tasks SET last_synced_at = ?, needs_sync = 0 WHERE id = ?',
+      [new Date().toISOString(), id],
+    );
   },
 
   mapRow(row: Record<string, unknown>): Task {
@@ -273,6 +353,13 @@ export const TaskRepository = {
       priority: row.priority as Task['priority'],
       status: row.status as Task['status'],
       dueDate: (row.due_date as string) || null,
+      category: (row.category as string) || '',
+      labels: safeJsonParse(row.labels as string, []),
+      notes: (row.notes as string) || '',
+      subtasks: safeJsonParse(row.subtasks as string, []),
+      recurrence: safeJsonParse(row.recurrence as string, { type: 'none', interval: 1 }),
+      attachments: safeJsonParse(row.attachments as string, []),
+      voiceNotes: safeJsonParse(row.voice_notes as string, []),
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
       version: row.version as number,
@@ -282,3 +369,14 @@ export const TaskRepository = {
     };
   },
 };
+
+function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}

@@ -1,42 +1,56 @@
+import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { Platform } from 'react-native';
 import { ServerTask } from '../types/task';
 import { AuthResponse } from '../types/auth';
 
 /**
- * API Configuration
- * For Android emulator use 10.0.2.2, for iOS simulator use localhost.
+ * API Configuration.
+ * Android emulator uses 10.0.2.2, iOS simulator uses localhost.
  */
-import { Platform } from 'react-native';
-
 const BASE_URL = Platform.select({
   android: 'http://10.0.2.2:3000',
   ios: 'http://localhost:3000',
   default: 'http://localhost:3000',
 });
 
-const TIMEOUT_MS = 15000;
-
 let authToken: string | null = null;
 
-/**
- * Set the auth token for all subsequent requests.
- */
 export function setAuthToken(token: string | null): void {
   authToken = token;
 }
 
-/**
- * Get the current auth token.
- */
 export function getAuthToken(): string | null {
   return authToken;
 }
 
-interface RequestOptions {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-  path: string;
-  body?: object;
-  requiresAuth?: boolean;
-}
+/**
+ * Axios instance with interceptors for auth and error handling.
+ */
+const api: AxiosInstance = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15000,
+  headers: {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  },
+});
+
+// Request interceptor: attach JWT token
+api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  if (authToken) {
+    config.headers.Authorization = `Bearer ${authToken}`;
+  }
+  return config;
+});
+
+// Response interceptor: let errors pass through to safeRequest for proper status capture
+api.interceptors.response.use(
+  response => response,
+  (error: AxiosError) => {
+    // Pass through — safeRequest handles error extraction
+    return Promise.reject(error);
+  },
+);
 
 interface ApiResult<T> {
   success: boolean;
@@ -45,181 +59,132 @@ interface ApiResult<T> {
   status: number;
 }
 
-/**
- * HTTP client with timeout, auth headers, and error handling.
- */
-async function request<T>(options: RequestOptions): Promise<ApiResult<T>> {
-  const { method, path, body, requiresAuth = true } = options;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-
-  if (requiresAuth && authToken) {
-    headers.Authorization = `Bearer ${authToken}`;
-  }
-
+async function safeRequest<T>(
+  fn: () => Promise<{ data: T; status: number }>,
+): Promise<ApiResult<T>> {
   try {
-    const response = await fetch(`${BASE_URL}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    const responseData = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      const errorMsg =
-        responseData?.error ||
-        (Array.isArray(responseData?.error)
-          ? responseData.error.join(', ')
-          : `HTTP ${response.status}`);
-      return {
-        success: false,
-        data: null,
-        error: typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg),
-        status: response.status,
-      };
-    }
-
-    return {
-      success: true,
-      data: responseData as T,
-      error: null,
-      status: response.status,
-    };
+    const response = await fn();
+    return { success: true, data: response.data, error: null, status: response.status };
   } catch (error) {
-    clearTimeout(timeoutId);
-    const message =
-      error instanceof Error ? error.message : 'Network error';
-    return {
-      success: false,
-      data: null,
-      error: message,
-      status: 0,
-    };
+    if (axios.isAxiosError(error) && error.response) {
+      const data = error.response.data as Record<string, unknown>;
+      const message =
+        typeof data?.error === 'string'
+          ? data.error
+          : Array.isArray(data?.error)
+            ? (data.error as string[]).join(', ')
+            : `HTTP ${error.response.status}`;
+      return { success: false, data: null, error: message, status: error.response.status };
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, data: null, error: message, status: 0 };
   }
 }
 
 // ─── Auth API ────────────────────────────────────────────────────────────────
 
 export const AuthApi = {
-  async register(
-    name: string,
-    email: string,
-    password: string,
-  ): Promise<ApiResult<AuthResponse>> {
-    return request<AuthResponse>({
-      method: 'POST',
-      path: '/api/auth/register',
-      body: { name, email, password },
-      requiresAuth: false,
-    });
+  async register(name: string, email: string, password: string): Promise<ApiResult<AuthResponse>> {
+    return safeRequest(() => api.post('/api/auth/register', { name, email, password }));
   },
 
-  async login(
-    email: string,
-    password: string,
-  ): Promise<ApiResult<AuthResponse>> {
-    return request<AuthResponse>({
-      method: 'POST',
-      path: '/api/auth/login',
-      body: { email, password },
-      requiresAuth: false,
-    });
+  async login(email: string, password: string): Promise<ApiResult<AuthResponse>> {
+    return safeRequest(() => api.post('/api/auth/login', { email, password }));
   },
 
   async getProfile(): Promise<ApiResult<{ user: { _id: string; name: string; email: string } }>> {
-    return request({
-      method: 'GET',
-      path: '/api/auth/profile',
-    });
+    return safeRequest(() => api.get('/api/auth/profile'));
   },
 };
 
 // ─── Task API ────────────────────────────────────────────────────────────────
 
 export const TaskApi = {
-  /**
-   * GET /api/tasks — Fetch all tasks for the authenticated user.
-   */
   async getAllTasks(params?: {
     status?: string;
     priority?: string;
     sort?: string;
   }): Promise<ApiResult<ServerTask[]>> {
-    const query = new URLSearchParams();
-    if (params?.status) {
-      query.set('status', params.status);
-    }
-    if (params?.priority) {
-      query.set('priority', params.priority);
-    }
-    if (params?.sort) {
-      query.set('sort', params.sort);
-    }
-    const queryStr = query.toString();
-    const path = queryStr ? `/api/tasks?${queryStr}` : '/api/tasks';
-    return request<ServerTask[]>({ method: 'GET', path });
+    return safeRequest(() => api.get('/api/tasks', { params }));
   },
 
-  /**
-   * GET /api/tasks/:id — Fetch a single task.
-   */
   async getTask(id: string): Promise<ApiResult<ServerTask>> {
-    return request<ServerTask>({ method: 'GET', path: `/api/tasks/${id}` });
+    return safeRequest(() => api.get(`/api/tasks/${id}`));
   },
 
-  /**
-   * POST /api/tasks — Create a new task.
-   */
   async createTask(body: {
     title: string;
     description?: string;
     priority?: string;
     status?: string;
     dueDate?: string | null;
+    category?: string;
+    labels?: string[];
+    notes?: string;
+    subtasks?: object[];
+    recurrence?: object;
+    attachments?: object[];
+    voiceNotes?: object[];
   }): Promise<ApiResult<ServerTask>> {
-    return request<ServerTask>({
-      method: 'POST',
-      path: '/api/tasks',
-      body,
-    });
+    return safeRequest(() => api.post('/api/tasks', body));
   },
 
-  /**
-   * PUT /api/tasks/:id — Update a task.
-   */
   async updateTask(
     id: string,
-    body: {
-      title?: string;
-      description?: string;
-      priority?: string;
-      status?: string;
-      dueDate?: string | null;
-    },
+    body: Record<string, unknown>,
   ): Promise<ApiResult<ServerTask>> {
-    return request<ServerTask>({
-      method: 'PUT',
-      path: `/api/tasks/${id}`,
-      body,
-    });
+    return safeRequest(() => api.put(`/api/tasks/${id}`, body));
+  },
+
+  async deleteTask(id: string): Promise<ApiResult<{ message: string }>> {
+    return safeRequest(() => api.delete(`/api/tasks/${id}`));
   },
 
   /**
-   * DELETE /api/tasks/:id — Delete a task.
+   * Upload an attachment file via multipart form data.
    */
-  async deleteTask(id: string): Promise<ApiResult<{ message: string }>> {
-    return request<{ message: string }>({
-      method: 'DELETE',
-      path: `/api/tasks/${id}`,
-    });
+  async uploadAttachment(
+    taskId: string,
+    filePath: string,
+    fileName: string,
+    mimeType: string,
+  ): Promise<ApiResult<{ url: string; fileName: string }>> {
+    const formData = new FormData();
+    formData.append('file', {
+      uri: filePath,
+      name: fileName,
+      type: mimeType,
+    } as unknown as Blob);
+
+    return safeRequest(() =>
+      api.post(`/api/tasks/${taskId}/attachments`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      }),
+    );
+  },
+
+  /**
+   * Upload a voice note file.
+   */
+  async uploadVoiceNote(
+    taskId: string,
+    filePath: string,
+    duration: number,
+  ): Promise<ApiResult<{ url: string; duration: number }>> {
+    const formData = new FormData();
+    formData.append('audio', {
+      uri: filePath,
+      name: `voice_${Date.now()}.m4a`,
+      type: 'audio/m4a',
+    } as unknown as Blob);
+    formData.append('duration', String(duration));
+
+    return safeRequest(() =>
+      api.post(`/api/tasks/${taskId}/voice-notes`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      }),
+    );
   },
 };
+
+export { api };

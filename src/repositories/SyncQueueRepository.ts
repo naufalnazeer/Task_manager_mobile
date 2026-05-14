@@ -57,16 +57,20 @@ export const SyncQueueRepository = {
     const db = getDatabase();
 
     // If deleting, remove all pending ops for this task
-    if (operation === 'delete') {
-      db.execute(
-        `DELETE FROM sync_queue WHERE task_id = ? AND status IN ('pending', 'failed')`,
-        [taskId],
-      );
-    } else {
-      db.execute(
-        `DELETE FROM sync_queue WHERE task_id = ? AND operation = ? AND status IN ('pending', 'failed')`,
-        [taskId, operation],
-      );
+    try {
+      if (operation === 'delete') {
+        db.execute(
+          `DELETE FROM sync_queue WHERE task_id = ? AND status IN ('pending', 'failed')`,
+          [taskId],
+        );
+      } else {
+        db.execute(
+          `DELETE FROM sync_queue WHERE task_id = ? AND operation = ? AND status IN ('pending', 'failed')`,
+          [taskId, operation],
+        );
+      }
+    } catch (err) {
+      console.log(err)
     }
 
     return this.enqueue(taskId, operation, payload);

@@ -1,5 +1,6 @@
 /**
  * SQLite Database Schema for offline-first task manager.
+ * Supports: subtasks, categories, labels, notes, attachments, voice notes, recurrence.
  */
 
 export const DB_NAME = 'task_manager.db';
@@ -9,9 +10,16 @@ export const CREATE_TASKS_TABLE = `
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent')),
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in-progress', 'completed')),
     due_date TEXT,
+    category TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '[]',
+    notes TEXT NOT NULL DEFAULT '',
+    subtasks TEXT NOT NULL DEFAULT '[]',
+    recurrence TEXT NOT NULL DEFAULT '{"type":"none","interval":1}',
+    attachments TEXT NOT NULL DEFAULT '[]',
+    voice_notes TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1,
@@ -57,8 +65,10 @@ export const CREATE_SYNC_META_TABLE = `
 export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);',
   'CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);',
+  'CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category);',
   'CREATE INDEX IF NOT EXISTS idx_tasks_is_deleted ON tasks(is_deleted);',
   'CREATE INDEX IF NOT EXISTS idx_tasks_needs_sync ON tasks(needs_sync);',
+  'CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);',
   'CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);',
   'CREATE INDEX IF NOT EXISTS idx_sync_queue_task_id ON sync_queue(task_id);',
   'CREATE INDEX IF NOT EXISTS idx_sync_queue_next_retry ON sync_queue(next_retry_at);',
