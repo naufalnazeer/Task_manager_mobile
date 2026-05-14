@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { StatusBar, useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
+import BootSplash from 'react-native-bootsplash';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { useNetworkStore } from './src/stores/networkStore';
 
@@ -11,6 +12,8 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = startListening();
+    // Hide splash screen after app is ready
+    BootSplash.hide({ fade: true });
     return unsubscribe;
   }, [startListening]);
 

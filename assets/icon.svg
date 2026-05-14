@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="220" fill="#6C63FF"/>
+  
+  <!-- Clipboard body -->
+  <rect x="312" y="280" width="400" height="520" rx="40" fill="#FFFFFF"/>
+  
+  <!-- Clipboard clip -->
+  <rect x="412" y="240" width="200" height="80" rx="40" fill="#FFFFFF"/>
+  <rect x="442" y="250" width="140" height="40" rx="20" fill="#6C63FF" opacity="0.3"/>
+  
+  <!-- Checkmark line 1 (completed) -->
+  <circle cx="400" cy="420" r="24" fill="#4ECDC4"/>
+  <polyline points="388,420 398,430 414,410" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="450" y="408" width="200" height="24" rx="12" fill="#E8E8F0"/>
+  
+  <!-- Checkmark line 2 (in progress) -->
+  <circle cx="400" cy="500" r="24" fill="#FFB347"/>
+  <rect x="388" y="494" width="24" height="12" rx="6" fill="#FFFFFF"/>
+  <rect x="450" y="488" width="160" height="24" rx="12" fill="#E8E8F0"/>
+  
+  <!-- Checkmark line 3 (pending) -->
+  <circle cx="400" cy="580" r="24" fill="none" stroke="#E8E8F0" stroke-width="4"/>
+  <rect x="450" y="568" width="180" height="24" rx="12" fill="#E8E8F0"/>
+  
+  <!-- Checkmark line 4 (pending) -->
+  <circle cx="400" cy="660" r="24" fill="none" stroke="#E8E8F0" stroke-width="4"/>
+  <rect x="450" y="648" width="140" height="24" rx="12" fill="#E8E8F0"/>
+  
+  <!-- Sync arrow (bottom right) -->
+  <circle cx="680" cy="740" r="50" fill="#4ECDC4"/>
+  <path d="M660,740 A25,25 0 1,1 680,715" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+  <polygon points="680,705 690,718 670,718" fill="#FFFFFF"/>
+</svg>
