@@ -1,4 +1,4 @@
-package com.task_manager
+package com.taskmanagernn
 
 import android.app.Application
 import com.facebook.react.PackageList

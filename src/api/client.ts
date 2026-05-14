@@ -8,9 +8,9 @@ import { AuthResponse } from '../types/auth';
  * Android emulator uses 10.0.2.2, iOS simulator uses localhost.
  */
 const BASE_URL = Platform.select({
-  android: 'http://10.0.2.2:3000',
-  ios: 'http://localhost:3000',
-  default: 'http://localhost:3000',
+  android: 'https://task-manager-backend-r5eb.onrender.com',
+  ios: 'https://task-manager-backend-r5eb.onrender.com',
+  default: 'https://task-manager-backend-r5eb.onrender.com',
 });
 
 let authToken: string | null = null;
